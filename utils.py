@@ -1,10 +1,6 @@
 import torch
-from torch import optim
-from torch.utils.data import DataLoader
 import os, csv, random, logging, time
 import numpy as np
-import torch.nn as nn
-import torch.nn.functional as F
 
 def set_seed(seed):
     random.seed(seed)
