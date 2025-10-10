@@ -11,10 +11,6 @@ import time
 from AugMix_cv2 import AugmentCV
 from typing import List, Optional, Set, Tuple
 
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-
 # for GRID
 map = {}
 num = 0
