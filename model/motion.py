@@ -63,7 +63,7 @@ class motionNet(nn.Module):
 
 	def data_concat(self,video):
 		concat_video=torch.unsqueeze(torch.cat([video[:,0,::],video[:,1,::]],1),1)
-		for i in range(1,opt.ts-1):
+		for i in range(1,opt.ts-1):	# opt.ts = 75
 			image_couple=torch.unsqueeze(torch.cat([video[:,i,::],video[:,i+1,::]],1),1)
 			concat_video=torch.cat([concat_video,image_couple],1)
 		return concat_video
