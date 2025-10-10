@@ -495,5 +495,3 @@ if __name__ == "__main__":
         lr=args.lr, weight_decay=1e-4, epochs=args.epochs,
         device=device
     )
-
-# CUDA_VISIBLE_DEVICES=3 python train.py --obj s8
