@@ -1,12 +1,9 @@
-'''
-9.17 + osad learning
-'''
 # model
-from ae import AutoEncoder
-from motion import motionNet
-from block import Flatten
+from model.ae import AutoEncoder
+from model.motion import motionNet
+from model.block import Flatten
 # dataset
-from new_dataset import Grid
+from dataset import Grid
 # other necessities
 import numpy as np
 import random, os, csv, logging, argparse, time
@@ -17,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from collections import defaultdict
-from new_train import set_seed, get_logger
+from utils import set_seed, get_logger
 
 def arg_parse():
     parser = argparse.ArgumentParser()
@@ -26,34 +23,29 @@ def arg_parse():
     parser.add_argument('--an_batch_size', type=int, default=4)    
     parser.add_argument('--epochs', type=int, help='epoch num when training', default=100)
     parser.add_argument('--save_interval', type=int, default=5, help='epoch interval to save checkpoint')
-    parser.add_argument('--pth_root', help='saved pth file path', default='/data/users/bofanchen/model_sadth/test_new/base_ckpt') ##
+    parser.add_argument('--pth_root', help='saved pth file path', default='base_ckpt') ##
     parser.add_argument('--lr', type=float, default=0.005, help='Learning rate')
-    parser.add_argument('--data_path',type=str, default='/data/users/bofanchen/SA-DTH/dataset_even_new.csv', help='Path to data') ##
-    parser.add_argument('--save_prefix', type=str, default='/data/users/bofanchen/model_sadth/osad', help='Path to save s2 first step checkpoint') ##
+    parser.add_argument('--data_path',type=str, default='necessities/dataset_even_new.csv', help='Path to data') ##
+    parser.add_argument('--save_prefix', type=str, default='necessities/checkpoints', help='Path to save s2 first step checkpoint') ##
     parser.add_argument('--obj', type=str, default='s2', help='choose specific user model')
-    parser.add_argument('--real_num', type=int, default=50, help='real training num') # 100
+    parser.add_argument('--real_num', type=int, default=50, help='real training num')
     parser.add_argument('--dr', type=int, default=3)   #   
     parser.add_argument('--df', type=int, default=2) 
     return parser.parse_args()
 
 def check_bn_frozen(model, name="net"):
-    """
-    打印并返回 BatchNorm 是否全部冻结：
-      - Layer 处于 eval() 状态
-      - 权重 / bias / running stats 都不更新
-    """
     ok = True
     for m in model.modules():
         if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
             if m.training:
-                print(f"[WARN] {name}: {m} 仍在 train 模式")
+                print(f"[WARN] {name}: {m} still training")
                 ok = False
             for p in m.parameters(recurse=False):     # weight / bias
                 if p.requires_grad:
-                    print(f"[WARN] {name}: {m} 的参数还在 requires_grad=True")
+                    print(f"[WARN] {name}: {m} still requires_grad=True")
                     ok = False
     if ok:
-        print(f"[OK]   {name}: 所有 BatchNorm 均已冻结")
+        print(f"[OK]   {name}: All BatchNorm Frozen.")
     return ok
 
 # for preparation
@@ -75,36 +67,17 @@ def pca_basis(X: np.ndarray, d: int):
     return B.astype(np.float32)
     
 class DualSubspaceHead(nn.Module):
-    """
-    输入：z in R^E
-    学习：Br in R^{E x dr}, Bf in R^{E x df}（列正交）
-    输出：二分类 logits
-    """
     def __init__(self, E=128, dr=3, df=2, hidden=64):
         super().__init__()
-        # 可学习子空间基
-        self.Br = nn.Parameter(torch.empty(E, dr))  # 真实子空间
-        self.Bf = nn.Parameter(torch.empty(E, df))  # 伪造子空间
+        # learnable
+        self.Br = nn.Parameter(torch.empty(E, dr))  # for real subspace
+        self.Bf = nn.Parameter(torch.empty(E, df))  # for fake subspace
         nn.init.orthogonal_(self.Br)
         nn.init.orthogonal_(self.Bf)
         
-        self.register_buffer('mu_r', torch.zeros(E))   # 真实特征均值
-
-        # 小头：输入 concat[z, e_r, e_f] → hidden → 1
+        self.register_buffer('mu_r', torch.zeros(E))   
         self.fc1 = nn.Linear(E + 2, hidden)
         self.fc2 = nn.Linear(hidden, 1)
-        
-    @torch.no_grad()
-    def update_mu_r(self, z: torch.Tensor, y: torch.Tensor, momentum: float = 0.05):
-        """
-        z: [B,E], y: [B]  (0=real, 1=fake)
-        用 batch 内的真实样本均值对 mu_r 做指数滑动更新。
-        """
-        mask_r = (y == 0)
-        if mask_r.any():
-            m = z[mask_r].mean(dim=0)          # [E]
-            # EMA: mu <- (1-mom)*mu + mom*m
-            self.mu_r.lerp_(m, momentum)       # 原地线性插值，数值稳定
 
     @staticmethod
     def proj(B, z):
@@ -112,11 +85,6 @@ class DualSubspaceHead(nn.Module):
         return (z @ B) @ B.T
 
     def forward(self, z):
-        """
-        返回：
-          logits: [B,1]
-          e_r, e_f: 残差能量
-        """
         Prz = self.proj(self.Br, z)
         Pfz = self.proj(self.Bf, z)
         e_r = ((z - Prz)**2).sum(dim=1, keepdim=True)  # [B,1]
@@ -126,7 +94,7 @@ class DualSubspaceHead(nn.Module):
         logits = self.fc2(h)
         return logits, e_r, e_f
 
-    def orthogonal_regularizer(self):       # 各自正交、彼此正交”的形状
+    def orthogonal_regularizer(self):       
         I_r = self.Br.T @ self.Br - torch.eye(self.Br.size(1), device=self.Br.device)
         I_f = self.Bf.T @ self.Bf - torch.eye(self.Bf.size(1), device=self.Bf.device)
         cross = self.Br.T @ self.Bf
@@ -154,7 +122,7 @@ def get_model(backbone_path, device, checkpoint_path=None):
     ae.load_state_dict(state1['ae_state_dict'])
     
     for net in (motion_net, ae):
-        net.eval()                               # BN / Dropout 固定
+        net.eval()                               # BN / Dropout Frozen
         for p in net.parameters():
             p.requires_grad = False
     
@@ -344,9 +312,7 @@ def train_dual_subspace(
         
         # cuda_stats(f"epoch{ep}-after-train")
         
-        # 上传 github 时删除
-        # ------- Validate：在 normal_val + 各 fake 上做 AUROC -------
-        # 验证：normal_val (label=0) + 每个 fake_loader (label=1)
+        # Validation：normal_val (label=0) + each fake_loader (label=1)
         def eval_loader(loader, label_val):
             scores, labs = [], []
             with torch.no_grad():      
@@ -374,7 +340,6 @@ def train_dual_subspace(
             for name, loader in fake_loaders.items():
                 s_fake, l_fake = eval_loader(loader, 1)
                 if s_fake.size:
-                    # 单独 vs normal_val 的 AUC
                     s_pair = np.concatenate([s_norm, s_fake])
                     l_pair = np.concatenate([l_norm, l_fake])
                     try:
@@ -391,9 +356,6 @@ def train_dual_subspace(
             except:
                 auc = float('nan')
                 
-        # cuda_stats(f"epoch{ep}-after-val")        
-        
-        # 计算 epoch 均值
         avg = {k: (meters[k] / max(n_batches, 1)) for k in meters}
 
         if auc > best_auc:
@@ -404,7 +366,6 @@ def train_dual_subspace(
                 'epoch': ep, 'auc': best_auc,
             }
             
-        # 日志打印：先打印 per-fake，再打印 overall
         per_str = " | ".join([f"{k}:{v:.4f}" for k,v in per_auc.items()]) if per_auc else "no_fake"
         logger.info(
             f"[Ep {ep:03d}] "
@@ -440,7 +401,7 @@ if __name__ == "__main__":
     encoder = get_model(backbone_path, device)
     
     # dataset
-    anoms_dir = '/data/users/bofanchen/datasets/test_file/'
+    anoms_dir = 'necessities/test_file/'
     osad_csvs = [
         anoms_dir + args.obj + '_fom.csv',
         anoms_dir + args.obj + '_IP_LAP.csv',
@@ -448,7 +409,7 @@ if __name__ == "__main__":
         anoms_dir + args.obj + '_talklip.csv',
         anoms_dir + args.obj + '_wav2lip.csv',
     ]
-    prefix = '/data/users/bofanchen/ProDet/osad_anoms_cache_txt/'
+    prefix = 'necessities/osad_anoms_cache_txt/'
     cache_file = prefix + f'osad_anoms_cache_{args.obj}.txt'
     # ==== anomaly training set ====
     anomaly_ds = Grid(
@@ -482,9 +443,7 @@ if __name__ == "__main__":
     # ==== for validation ====
     specs = {
         "fake1": f"{args.obj}_talklip.csv",
-        "fake2": f"{args.obj}pt_1vid_v4.csv",
-        "fake3": f"{args.obj}ERnerf_1vid_v0.csv",
-        "fake4": f"{args.obj}mimic_1vid_v1.csv",
+        "fake2": f"{args.obj}_wav2lip.csv"
     }
 
     # validation Dataset
@@ -532,9 +491,9 @@ if __name__ == "__main__":
         normal_val_loader=normal_val_loader,
         fake_loaders=fake_loaders,
         dr=args.dr, df=args.df, hidden=64,
-        lambda_rec=1.0, lambda_ortho=0.1,           # ************
+        lambda_rec=1.0, lambda_ortho=0.1,           
         lr=args.lr, weight_decay=1e-4, epochs=args.epochs,
         device=device
     )
 
-# CUDA_VISIBLE_DEVICES=3 python osad_train.py --obj s8
+# CUDA_VISIBLE_DEVICES=3 python train.py --obj s8
