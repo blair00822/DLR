@@ -1,2 +1,2 @@
-# Learning-Decomposed-Lip-Representations-against-Generative-Forgery-Attacks
-Official Code (ICASSP 2026 UNDER REVIEW...)
+# Official Code
+DECOUPLING ORTHOGONAL LIP FEATURES AGAINST GENERATIVE IMPOSTERS (ICASSP 2026)
