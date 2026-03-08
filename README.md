@@ -1,7 +1,8 @@
 # DECOUPLING ORTHOGONAL LIP FEATURES AGAINST GENERATIVE IMPOSTERS (ICASSP 2026)
 Official PyTorch implementation of paper "DECOUPLING ORTHOGONAL LIP FEATURES AGAINST GENERATIVE IMPOSTERS".
 
-ABSTRACT
+**ABSTRACT**
+
 The proliferation of Talking Face Generation (TFG) techniques
 presents a formidable challenge to Visual Speaker Authentication
 (VSA) systems by enabling instant creation of highly realistic im-
